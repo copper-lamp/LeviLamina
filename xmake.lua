@@ -6,10 +6,16 @@ add_repositories("levimc-repo " .. (get_config("levimc_repo") or "https://github
 
 local is_windows  = is_plat("windows")
 local is_linux    = is_plat("linux")
+local is_android  = is_plat("android")
 
 local is_server = is_config("target_type", "server")
 
 -- Dependencies from xmake-repo.
+if is_android then
+-- Android 目标（P1 空转 mod）当前只需 fmt；
+-- 其余依赖均为 Windows/Linux 形状，待平台层移植时再逐个补齐。
+add_requires("fmt 11.2.0")
+else
 add_requires("ctre 3.8.1")
 add_requires("entt v4.0.0")
 add_requires("expected-lite v0.8.0")
@@ -36,6 +42,7 @@ add_requires("levibuildscript 0.6.1")
 add_requires("preloader v1.16.2")
 add_requires("symbolprovider v1.3.0")
 add_requires("trampoline 2024.11.7")
+end
 
 if is_windows then
 add_requires("libhat 0.4.0")
@@ -44,6 +51,10 @@ end
 
 if is_linux then
 set_toolchains("clang")
+end
+
+if is_android then
+set_toolchains("ndk")
 end
 
 if has_config("tests") then
@@ -83,7 +94,16 @@ option("target_type")
     set_values("server", "client")
 option_end()
 
-if is_server then
+option("preloader_android_root")
+    set_default("")
+    set_showmenu(true)
+    set_description("Path to the LiteLDev/preloader-android checkout (android target only)")
+option_end()
+
+if is_android then
+    set_defaultarchs("android|arm64-v8a")
+    set_allowedarchs("android|arm64-v8a")
+elseif is_server then
     set_defaultarchs("windows|x64")
     set_allowedarchs("windows|x64", "linux|x86_64")
 else
@@ -99,6 +119,63 @@ if is_linux then
     set_runtimes("c++_shared")
 end
 
+if is_android then
+    -- Android (arm64-v8a) 分支：P1 阶段只产出可被 LeviLaunchroid 加载的空转 mod，
+    -- 用于验证 preload-native 加载契约与 NDK 工具链。
+    -- 完整客户端适配方案见 D:\LL\docs\安卓客户端适配.md。
+    -- 主目标 LeviLamina 目前尚不支持 android，故整体跳过。
+    local preloaderAndroidRoot = get_config("preloader_android_root")
+    if not preloaderAndroidRoot or preloaderAndroidRoot == "" then
+        preloaderAndroidRoot = os.getenv("PRELOADER_ANDROID_ROOT")
+    end
+    if not preloaderAndroidRoot or preloaderAndroidRoot == "" then
+        preloaderAndroidRoot = "$(projectdir)/../libs/preloader-android"
+    end
+
+    target("LeviLaminaAndroidStub")
+        set_kind("shared")
+        set_basename("levilamina_stub")
+        set_languages("c++20")
+        set_symbols("debug")
+        add_files("src-android/**.cpp")
+        -- /src 用于引入 SDK 私有的 pl/Gloss.h（GlossHook 的 C 接口，非安装头）。
+        add_includedirs("src-android", preloaderAndroidRoot .. "/include", preloaderAndroidRoot .. "/src")
+        add_packages("fmt")
+        add_defines("LL_PLAT_C")
+        add_cxflags(
+            "-Wall",
+            "-Wextra",
+            "-fvisibility=hidden",
+            "-fvisibility-inlines-hidden",
+            "-Wno-unused-command-line-argument"
+        )
+        -- 必须与 Launcher 内置的 libpreloader.so 建立 DT_NEEDED 关系：
+        -- ModNativeLoader 先 System.load(mod)（RTLD_LOCAL），preloader 的导出符号
+        -- （如 pl::mod::NativeMod::current()）对 mod 不可见；只有 DT_NEEDED 才能让
+        -- 动态链接器在 dlopen(mod) 时一并加载并绑定 preloader。官方 examples/full-cpp-mod
+        -- 亦是通过 link preloader target 达到同样效果。
+        add_linkdirs(preloaderAndroidRoot .. "/prebuilt/arm64-v8a")
+        add_shflags(
+            "-Wl,--no-as-needed",
+            "-lpreloader",
+            "-Wl,--unresolved-symbols=ignore-all",
+            {force = true}
+        )
+        on_config(function (target)
+            -- NDK toolchain 的 C++ STL 由**全局** config "runtimes" 决定
+            -- （xmake/toolchains/ndk/load.lua: `config.get("runtimes") or ...`，缺省为 c++_static），
+            -- 而 target 级 set_runtimes 对它无效、xmake.lua 也改不了全局 config，
+            -- 只能靠命令行开关。MCBE 自身链接 libc++_shared.so，必须对齐，
+            -- 否则同进程内会出现两份 C++ 运行时。此处强制校验，避免静默产出错误产物。
+            if get_config("runtimes") ~= "c++_shared" then
+                raise("LeviLamina android: 需以 --runtimes=c++_shared 配置（当前为 " ..
+                      tostring(get_config("runtimes")) .. "）")
+            end
+        end)
+        after_build(function (target)
+            os.cp("src-android/manifest.json", target:targetdir())
+        end)
+else
 target("LeviLamina")
     add_rules("@levibuildscript/linkrule")
     set_languages("c++20")
@@ -323,3 +400,4 @@ target("LeviLamina")
                modVersion = versionStr
            })
     end)
+end

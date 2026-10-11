@@ -1,0 +1,8 @@
+{
+  "type": "preload-native",
+  "name": "LeviLamina Android Stub",
+  "author": "LiteLDev",
+  "version": "0.6.0",
+  "entry": "liblevilamina_stub.so",
+  "minecraft_versions": []
+}
